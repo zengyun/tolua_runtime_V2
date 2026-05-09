@@ -49,4 +49,9 @@ $LIPO -create "$DESTDIR"/libluajit-*.a -output "$DESTDIR"/libluajit.a
 $STRIP -S "$DESTDIR"/libluajit.a
 xcodebuild clean
 xcodebuild -configuration=Release
-cp -f ./build/Release-iphoneos/libtolua.a ../Plugins/iOS/
+
+# 合并 libluajit.a + libtolua.a 为完整的静态库（包含 Lua C API 实现）
+xcrun libtool -static -o ./build/Release-iphoneos/libtolua_merged.a \
+    ./build/Release-iphoneos/libtolua.a \
+    "$DESTDIR"/libluajit.a
+cp -f ./build/Release-iphoneos/libtolua_merged.a ../Plugins/iOS/libtolua.a
