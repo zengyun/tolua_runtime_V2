@@ -42,6 +42,7 @@ gcc -m64 -O2 -std=gnu99 -shared -fPIC \
  sproto.new/sproto.c \
  sproto.new/lsproto.c \
  pbc/binding/lua/pbc-lua.c \
+ lua_cmsgpack.c \
  -o Plugins/linux/x86_64/tolua.so \
  -I./ \
  -Iluajit-2.1/src \

@@ -53,6 +53,7 @@ LOCAL_SRC_FILES :=	../../tolua.c \
 				    ../../pbc/src/varint.c \
 				    ../../pbc/src/wmessage.c \
 				    ../../pbc/binding/lua/pbc-lua.c \
+					../../lua_cmsgpack.c \
 
 LOCAL_WHOLE_STATIC_LIBRARIES += libluajit
 include $(BUILD_SHARED_LIBRARY)

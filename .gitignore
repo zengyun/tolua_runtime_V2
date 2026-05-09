@@ -40,3 +40,6 @@
 /iOS/libluajit-arm64.a
 /iOS/libluajit-armv7.a
 /iOS/libluajit-armv7s.a
+macjit/tolua.xcodeproj/xcuserdata/zengyun.xcuserdatad/xcschemes/xcschememanagement.plist
+macjit/tolua.xcodeproj/project.xcworkspace/xcuserdata/zengyun.xcuserdatad/UserInterfaceState.xcuserstate
+macjit/.DS_Store

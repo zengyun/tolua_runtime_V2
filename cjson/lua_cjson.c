@@ -1291,12 +1291,8 @@ static int json_decode(lua_State *l)
 
 /* ===== INITIALISATION ===== */
 
-//#if !defined(LUA_VERSION_NUM) || LUA_VERSION_NUM < 502
-#if 0
-/* Compatibility for Lua 5.1.
- *
- * luaL_setfuncs() is used to create a module table where the functions have
- * json_config_t as their first upvalue. Code borrowed from Lua 5.2 source. */
+#if (!defined(LUA_VERSION_NUM) || LUA_VERSION_NUM < 502) && !defined(luaL_newlib)
+/* Compatibility for pure Lua 5.1 (LuaJIT 2.1+ defines luaL_newlib and already provides luaL_setfuncs). */
 static void luaL_setfuncs (lua_State *l, const luaL_Reg *reg, int nup)
 {
     int i;

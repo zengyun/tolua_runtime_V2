@@ -7,7 +7,9 @@ extern "C" {
 #ifdef __cplusplus
 }
 #endif
-#ifdef __MAC_OS__
+#if defined(__APPLE__)
+#include <stdlib.h>
+#elif defined(__MAC_OS__)
 #include <malloc/malloc.h>
 #else
 #include <malloc.h>
