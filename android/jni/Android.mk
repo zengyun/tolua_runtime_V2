@@ -55,5 +55,7 @@ LOCAL_SRC_FILES :=	../../tolua.c \
 				    ../../pbc/binding/lua/pbc-lua.c \
 					../../lua_cmsgpack.c \
 
+LOCAL_LDFLAGS := -Wl,-z,max-page-size=16384
+
 LOCAL_WHOLE_STATIC_LIBRARIES += libluajit
 include $(BUILD_SHARED_LIBRARY)
