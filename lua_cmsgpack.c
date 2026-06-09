@@ -15,8 +15,11 @@
 
 /* Allows a preprocessor directive to override MAX_NESTING */
 #ifndef LUACMSGPACK_MAX_NESTING
-    #define LUACMSGPACK_MAX_NESTING  128 /* Max tables nesting. */
+    #define LUACMSGPACK_MAX_NESTING  32 /* Max tables nesting. */
 #endif
+
+/* Registry key for cycle detection during pack (per-Lua-state). */
+static const char *mp_visited_key = "LUA_CMSGPACK_PACK_VISITED";
 
 /* Check if float or double can be an integer without loss of precision */
 #define IS_INT_TYPE_EQUIVALENT(x, T) (!isinf(x) && (T)(x) == (x))
@@ -93,7 +96,10 @@ void memrevifle(void *ptr, size_t len) {
 typedef struct mp_buf {
     unsigned char *b;
     size_t len, free;
+    int failed;
 } mp_buf;
+
+static const unsigned char mp_nil_byte = 0xc0;
 
 void *mp_realloc(lua_State *L, void *target, size_t osize,size_t nsize) {
     void *(*local_realloc) (void *, void *, size_t osize, size_t nsize) = NULL;
@@ -109,17 +115,51 @@ mp_buf *mp_buf_new(lua_State *L) {
 
     /* Old size = 0; new size = sizeof(*buf) */
     buf = (mp_buf*)mp_realloc(L, NULL, 0, sizeof(*buf));
+    if (buf == NULL)
+        return NULL;
 
     buf->b = NULL;
     buf->len = buf->free = 0;
+    buf->failed = 0;
     return buf;
 }
 
-void mp_buf_append(lua_State *L, mp_buf *buf, const unsigned char *s, size_t len) {
-    if (buf->free < len) {
-        size_t newsize = (buf->len+len)*2;
+static void mp_buf_discard(mp_buf *buf) {
+    if (buf == NULL)
+        return;
 
-        buf->b = (unsigned char*)mp_realloc(L, buf->b, buf->len + buf->free, newsize);
+    buf->failed = 0;
+    buf->free += buf->len;
+    buf->len = 0;
+}
+
+void mp_buf_append(lua_State *L, mp_buf *buf, const unsigned char *s, size_t len) {
+    if (buf == NULL || buf->failed || len == 0)
+        return;
+
+    if (buf->free < len) {
+        size_t required = buf->len + len;
+        size_t newsize;
+        unsigned char *newb;
+
+        if (required < buf->len || required < len) {
+            buf->failed = 1;
+            return;
+        }
+
+        newsize = required * 2;
+        if (newsize < required) {
+            buf->failed = 1;
+            return;
+        }
+
+        newb = (unsigned char*)mp_realloc(L, buf->b, buf->len + buf->free, newsize);
+        if (newb == NULL) {
+            buf->failed = 1;
+            return;
+        }
+
+        buf->b = newb;
         buf->free = newsize - buf->len;
     }
     memcpy(buf->b+buf->len,s,len);
@@ -175,6 +215,9 @@ void mp_encode_bytes(lua_State *L, mp_buf *buf, const unsigned char *s, size_t l
     unsigned char hdr[5];
     int hdrlen;
 
+    if (buf->failed)
+        return;
+
     if (len < 32) {
         hdr[0] = 0xa0 | (len&0xff); /* fix raw */
         hdrlen = 1;
@@ -204,6 +247,9 @@ void mp_encode_double(lua_State *L, mp_buf *buf, double d) {
     unsigned char b[9];
     float f = d;
 
+    if (buf->failed)
+        return;
+
     assert(sizeof(f) == 4 && sizeof(d) == 8);
     if (d == (double)f) {
         b[0] = 0xca;    /* float IEEE 754 */
@@ -221,6 +267,9 @@ void mp_encode_double(lua_State *L, mp_buf *buf, double d) {
 void mp_encode_int(lua_State *L, mp_buf *buf, int64_t n) {
     unsigned char b[9];
     int enclen;
+
+    if (buf->failed)
+        return;
 
     if (n >= 0) {
         if (n <= 127) {
@@ -294,6 +343,9 @@ void mp_encode_array(lua_State *L, mp_buf *buf, int64_t n) {
     unsigned char b[5];
     int enclen;
 
+    if (buf->failed)
+        return;
+
     if (n <= 15) {
         b[0] = 0x90 | (n & 0xf);    /* fix array */
         enclen = 1;
@@ -316,6 +368,9 @@ void mp_encode_array(lua_State *L, mp_buf *buf, int64_t n) {
 void mp_encode_map(lua_State *L, mp_buf *buf, int64_t n) {
     unsigned char b[5];
     int enclen;
+
+    if (buf->failed)
+        return;
 
     if (n <= 15) {
         b[0] = 0x80 | (n & 0xf);    /* fix map */
@@ -384,6 +439,9 @@ void mp_encode_lua_table_as_array(lua_State *L, mp_buf *buf, int level) {
     size_t len = lua_rawlen(L,-1), j;
 #endif
 
+    if (buf->failed)
+        return;
+
     mp_encode_array(L,buf,len);
     luaL_checkstack(L, 1, "in function mp_encode_lua_table_as_array");
     for (j = 1; j <= len; j++) {
@@ -396,6 +454,9 @@ void mp_encode_lua_table_as_array(lua_State *L, mp_buf *buf, int level) {
 /* Convert a lua table into a message pack key-value map. */
 void mp_encode_lua_table_as_map(lua_State *L, mp_buf *buf, int level) {
     size_t len = 0;
+
+    if (buf->failed)
+        return;
 
     /* First step: count keys into table. No other way to do it with the
      * Lua API, we need to iterate a first time. Note that an alternative
@@ -484,7 +545,34 @@ void mp_encode_lua_type(lua_State *L, mp_buf *buf, int level) {
 
     /* Limit the encoding of nested tables to a specified maximum depth, so that
      * we survive when called against circular references in tables. */
-    if (t == LUA_TTABLE && level == LUACMSGPACK_MAX_NESTING) t = LUA_TNIL;
+    if (t == LUA_TTABLE && level >= LUACMSGPACK_MAX_NESTING)
+        t = LUA_TNIL;
+
+    if (t == LUA_TTABLE) {
+        /* Detect circular references via the per-pack visited set. */
+        lua_getfield(L, LUA_REGISTRYINDEX, mp_visited_key);
+        if (lua_istable(L, -1)) {
+            int found;
+
+            lua_pushvalue(L, -2);
+            lua_rawget(L, -2);
+            found = lua_toboolean(L, -1);
+            lua_pop(L, 1);
+            if (found) {
+                lua_pop(L, 1);
+                mp_encode_lua_null(L, buf);
+                lua_pop(L, 1);
+                return;
+            }
+            lua_pushvalue(L, -2);
+            lua_pushboolean(L, 1);
+            lua_rawset(L, -3);
+            lua_pop(L, 1);
+        } else {
+            lua_pop(L, 1);
+        }
+    }
+
     switch(t) {
     case LUA_TSTRING: mp_encode_lua_string(L,buf); break;
     case LUA_TBOOLEAN: mp_encode_lua_bool(L,buf); break;
@@ -512,6 +600,8 @@ void mp_encode_lua_type(lua_State *L, mp_buf *buf, int level) {
 int mp_pack(lua_State *L) {
     int nargs = lua_gettop(L);
     int i;
+    mp_buf fallback_buf;
+    mp_buf *heap_buf;
     mp_buf *buf;
 
     if (nargs == 0)
@@ -520,7 +610,21 @@ int mp_pack(lua_State *L) {
     if (!lua_checkstack(L, nargs))
         return luaL_argerror(L, 0, "Too many arguments for MessagePack pack.");
 
-    buf = mp_buf_new(L);
+    heap_buf = mp_buf_new(L);
+    if (heap_buf != NULL) {
+        buf = heap_buf;
+    } else {
+        fallback_buf.b = NULL;
+        fallback_buf.len = fallback_buf.free = 0;
+        fallback_buf.failed = 0;
+        buf = &fallback_buf;
+    }
+
+    lua_newtable(L);
+    lua_pushvalue(L, -1);
+    lua_setfield(L, LUA_REGISTRYINDEX, mp_visited_key);
+    lua_pop(L, 1);
+
     for(i = 1; i <= nargs; i++) {
         /* Copy argument i to top of stack for _encode processing;
          * the encode function pops it from the stack when complete. */
@@ -529,15 +633,19 @@ int mp_pack(lua_State *L) {
 
         mp_encode_lua_type(L,buf,0);
 
-        lua_pushlstring(L,(char*)buf->b,buf->len);
-
-        /* Reuse the buffer for the next operation by
-         * setting its free count to the total buffer size
-         * and the current position to zero. */
-        buf->free += buf->len;
-        buf->len = 0;
+        if (buf->failed) {
+            lua_pushlstring(L, (const char*)&mp_nil_byte, 1);
+        } else {
+            lua_pushlstring(L,(char*)buf->b,buf->len);
+        }
+        mp_buf_discard(buf);
     }
-    mp_buf_free(L, buf);
+
+    lua_pushnil(L);
+    lua_setfield(L, LUA_REGISTRYINDEX, mp_visited_key);
+
+    if (heap_buf != NULL)
+        mp_buf_free(L, heap_buf);
 
     /* Concatenate all nargs buffers together */
     lua_concat(L, nargs);
